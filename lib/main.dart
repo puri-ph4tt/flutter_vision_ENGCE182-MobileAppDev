@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_vision/flutter_vision.dart';
 import 'package:image_picker/image_picker.dart';
@@ -34,13 +35,60 @@ class _MyAppState extends State<MyApp> {
   //Options option = Options.none;
   int _selectedIndex = 0;
   List<Widget> _widgetOptions = [];
+  List<String> labels = []; // Add this list
 
   @override
   void initState() {
     super.initState();
     vision = FlutterVision();
-    _widgetOptions = [
-      const Center(child: Text("Choose Task")),
+    loadLabels();
+    _widgetOptions = [  
+      FutureBuilder<void>(
+        future: loadLabels(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            return CustomScrollView(
+              slivers: <Widget>[
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'Detectable label details of YoloV5 and YoloV8 models the following:',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                SliverGrid(
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 200,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 3, // Adjust this ratio as needed
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (BuildContext context, int index) {
+                      final label = labels[index].trim(); // Trim to remove any leading/trailing spaces
+                      return Card(
+                        elevation: 3,
+                        child: ListTile(
+                          title: Text(
+                            label,
+                            style: const TextStyle(fontSize: 20),
+                          ),
+                        ),
+                      );
+                    },
+                    childCount: labels.length,
+                  ),
+                ),
+              ],
+            );
+          } else {
+            return const Center(child: CircularProgressIndicator());
+          }
+        },
+      ),
+
       TesseractImage(vision: vision),
       YoloImageV5(vision: vision),
       YoloImageV8Seg(vision: vision),
@@ -55,10 +103,25 @@ class _MyAppState extends State<MyApp> {
   }
 
   void _onItemTapped(int index) {
+    stopTTS(); // stop tts when change page
     setState(() {
       _selectedIndex = index;
     });
   }
+
+  // Load labels from "labels.txt" file
+  Future<void> loadLabels() async {
+    try {
+      final String labelData = await rootBundle.loadString('assets/labels.txt');
+      final List<String> labelList = labelData.split('\n'); // Split by line breaks
+      setState(() {
+        labels = labelList;
+      });
+    } catch (error) {
+      print('Error loading labels: $error');
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -113,7 +176,7 @@ class _YoloImageV5State extends State<YoloImageV5> {
   List<String> resultTags = [];
   List<String> positionX = [];
   List<String> positionY = [];
-  FlutterTts flutterTts = FlutterTts();
+
 
   @override
   void initState() {
@@ -151,22 +214,22 @@ class _YoloImageV5State extends State<YoloImageV5> {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               // Display the object counts
-              Column(
-                children: resultTags
-                    .toSet()
-                    .map((tag) {
-                      int count = resultTags.where((t) => t == tag).length;
-                      List<String> tags = resultTags.where((t) => t == tag).toList();
-                      return Card(
-                        child: ListTile(
-                          title: Text(
-                            '$tag ($count)',
-                            style: const TextStyle(fontSize: 20),
-                          ),
-                        ),
-                      );
-                    })
-                    .toList(),
+              Scrollbar(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: resultTags
+                      .toSet()
+                      .map((tag) {
+                        int count = resultTags.where((t) => t == tag).length;
+                        List<String> tags = resultTags.where((t) => t == tag).toList();
+                        return Text(
+                          '$tag ($count)',
+                          style: const TextStyle(fontSize: 20),
+                        );
+                      })
+                      .toList(),
+                  ),
+                ),
               ),
 
               //  -------------------------forDebug-------------------------
@@ -193,43 +256,6 @@ class _YoloImageV5State extends State<YoloImageV5> {
       ],
     );
   }
-
-  // TTS
-  Future<void> speakRecognizedObjects(List<Map<String, dynamic>> objects, int imageWidth) async {
-  await flutterTts.setLanguage("en-US"); // Set the desired language
-  await flutterTts.setPitch(1.0); // Adjust pitch as needed
-
-  // Sort objects by x-position
-  objects.sort((a, b) {
-    final double xPosA = (a['box'][0] as double);
-    final double xPosB = (b['box'][0] as double);
-    return xPosA.compareTo(xPosB);
-  });
-
-  for (var object in objects) {
-    final String tag = object['tag'] ?? 'Unknown'; // Get the "tag" property or use 'Unknown' if it's null
-    final double xPos = (object['box'][0] as double);
-    String positionDescription = '';
-
-    // Calculate the center of the image
-    final double xPosPercentage = (xPos / imageWidth) * 100.0;
-
-    // Calculate the relative position
-    if (xPosPercentage < 40.0) {
-      positionDescription = 'on the left';
-    } else if (xPosPercentage >= 40.0 && xPosPercentage <= 60.0) {
-      positionDescription = 'in the front';
-    } else {
-      positionDescription = 'on the right';
-    }
-
-    final String fullDescription = '$tag $positionDescription';
-    await flutterTts.speak(fullDescription);
-    await Future.delayed(Duration(seconds: 2)); // Wait for a moment before speaking the next object
-  }
-}
-
-
 
   String getObjectCounts(List<String> tags) {
     Map<String, int?> objectCounts = {}; // Make the value type nullable
@@ -292,8 +318,9 @@ class _YoloImageV5State extends State<YoloImageV5> {
         positionY = result
             .map((item) => double.parse("${item['box'][1]}").toStringAsFixed(2))
             .toList();
+        stopSpeech = false;
       });
-      speakRecognizedObjects(yoloResults, imageWidth);
+      speakRecognizedObjects(yoloResults, imageWidth, context);
     }
   }
 
@@ -349,6 +376,9 @@ class _YoloImageV8SegState extends State<YoloImageV8Seg> {
   int imageHeight = 1;
   int imageWidth = 1;
   bool isLoaded = false;
+  List<String> resultTags = [];
+  List<String> positionX = [];
+  List<String> positionY = [];
 
   @override
   void initState() {
@@ -441,7 +471,16 @@ class _YoloImageV8SegState extends State<YoloImageV8Seg> {
     if (result.isNotEmpty) {
       setState(() {
         yoloResults = result;
+        resultTags = result.map((item) => "${item['tag']}").toList();
+        positionX = result
+            .map((item) => double.parse("${item['box'][0]}").toStringAsFixed(2))
+            .toList();
+        positionY = result
+            .map((item) => double.parse("${item['box'][1]}").toStringAsFixed(2))
+            .toList();
+        stopSpeech = false;
       });
+      speakRecognizedObjects(yoloResults, imageWidth, context);
     }
   }
 
@@ -629,4 +668,54 @@ class _TesseractImageState extends State<TesseractImage> {
       });
     }
   }
+}
+
+
+// TTS
+FlutterTts flutterTts = FlutterTts();
+bool stopSpeech = false;
+
+Future<void> speakRecognizedObjects(List<Map<String, dynamic>> objects, int imageWidth, BuildContext context) async {
+  await flutterTts.setLanguage("en-US"); // Set the desired language
+  await flutterTts.setPitch(1.0); // Adjust pitch as needed
+
+  // Sort objects by x-position
+  objects.sort((a, b) {
+    final double xPosA = (a['box'][0] as double);
+    final double xPosB = (b['box'][0] as double);
+    return xPosA.compareTo(xPosB);
+  });
+
+  for (var object in objects) {
+
+    if (stopSpeech) {
+      break; // If the stopSpeech flag is true, break out of the loop to stop speech.
+    }
+
+    final String tag = object['tag'] ?? 'Unknown'; // Get the "tag" property or use 'Unknown' if it's null
+    final double xPos = (object['box'][0] as double);
+    String positionDescription = '';
+
+    // Calculate the center of the image
+    final double xPosPercentage = (xPos / imageWidth) * 100.0;
+
+    // Calculate the relative position
+    if (xPosPercentage < 40.0) {
+      positionDescription = 'on the left';
+    } else if (xPosPercentage >= 40.0 && xPosPercentage <= 60.0) {
+      positionDescription = 'in the front';
+    } else {
+      positionDescription = 'on the right';
+    }
+
+    final String fullDescription = '$tag $positionDescription';
+    await flutterTts.speak(fullDescription);
+    await Future.delayed(const Duration(seconds: 2)); // Wait for a moment before speaking the next object
+  }
+}
+
+void stopTTS() {
+  // Stop TTS (call flutterTts.stop() or set a flag to stop it)
+  stopSpeech = true;
+  flutterTts.stop();
 }
